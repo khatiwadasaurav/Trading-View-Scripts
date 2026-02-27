@@ -1,0 +1,209 @@
+//@version=6
+indicator("Market Metrics Dashboard v17 (Full & Accurate)", overlay=true, max_bars_back = 500)
+
+// ==========================================
+// --- Inputs ---
+// ==========================================
+grp_tab = "Table Settings"
+posTable   = input.string('Top Right', 'Position', options=['Top Left', 'Top Right', 'Bottom Left', 'Bottom Right'], group=grp_tab)
+tbl_size   = input.string('Normal', 'Size', options=['Tiny', 'Small', 'Normal', 'Large'], group=grp_tab)
+txt_col    = input.color(color.white, "Default Text Color", group=grp_tab)
+
+grp_disp = "Display Metrics"
+show_mktCap   = input(true, "Market Cap", group=grp_disp)
+show_float    = input(true, "Shares Float & %", group=grp_disp)
+show_adrp     = input(true, "ADR%", group=grp_disp)
+show_lod      = input(true, "LoD Price & Dist", group=grp_disp)
+show_52w      = input(true, "52W High/Low Dist", group=grp_disp)
+show_advs     = input(true, "Avg $ Vol & Avg Vol", group=grp_disp)
+show_projVol  = input(true, "Projected Volume", group=grp_disp)
+show_relVol   = input(true, "Rel. Vol & Vol Buzz", group=grp_disp)
+show_udRatio  = input(true, "U/D Ratio", group=grp_disp)
+show_rs       = input(true, "RS Rating", group=grp_disp)
+show_liqCap   = input(true, "Liquidity Cap", group=grp_disp)
+show_sector   = input(true, "Sector & Industry", group=grp_disp)
+
+// ==========================================
+// --- Calculations ---
+// ==========================================
+
+// Function to format large numbers
+formatNum(float n) =>
+    if n >= 1e12
+        str.tostring(n / 1e12, "#.##") + "T"
+    else if n >= 1e9
+        str.tostring(n / 1e9, "#.##") + "B"
+    else if n >= 1e6
+        str.tostring(n / 1e6, "#.##") + "M"
+    else if n >= 1e3
+        str.tostring(n / 1e3, "#.##") + "K"
+    else
+        str.tostring(n, "#.##")
+
+standardTicker = syminfo.prefix + ":" + syminfo.ticker
+dClose = request.security(standardTicker, "D", close)
+dHigh  = request.security(standardTicker, "D", high)
+dLow   = request.security(standardTicker, "D", low)
+dVol   = request.security(standardTicker, "D", volume)
+
+// --- ACCURATE PROJECTED VOLUME LOGIC ---
+// Uses the full daily session (including extended hours if enabled on chart)
+int sessionStart = time("D")
+int sessionEnd   = time_close("D")
+int timeCurrent  = timenow
+float percentOfDay = math.max(0.01, math.min(1.0, (timeCurrent - sessionStart) / (sessionEnd - sessionStart)))
+float projVol = dVol / percentOfDay
+
+// --- SMART BIAS LOGIC (Border Color) ---
+float trendAnchor = timeframe.isintraday ? ta.vwap(close) : ta.ema(close, 20)
+color bias_color = close > trendAnchor ? color.green : color.red
+
+// ADR & LoD Metrics
+adrPercent = 100 * (ta.sma(dHigh / dLow, 20) - 1)
+atrValue   = ta.atr(14)
+// Calculate distance from Low as % of Daily Range
+float dailyRange = dHigh - dLow
+float lod_dist   = dailyRange > 0 ? (100 * (dClose - dLow) / dailyRange) : 0
+
+// Volume Metrics
+avgVol     = ta.sma(dVol, 50)
+avgDolVol  = avgVol * dClose
+relVol     = (dVol / avgVol) * 100
+volBuzz    = 100 * (dVol / ta.sma(dVol, 50) - 1)
+
+// Fundamentals
+float totalShares = syminfo.shares_outstanding_total
+float mktCap      = totalShares * dClose
+float sharesFloat = syminfo.shares_outstanding_float
+float floatPer    = (sharesFloat / totalShares) * 100
+float liqCap      = avgVol * 0.01
+
+// 52 Week Metrics
+hi52 = request.security(standardTicker, "W", ta.highest(high, 52))
+lo52 = request.security(standardTicker, "W", ta.lowest(low, 52))
+distHigh = 100 * (dClose / hi52 - 1)
+distLow  = 100 * (dClose / lo52 - 1)
+
+// U/D Ratio
+upVolSum = math.sum(dClose > dClose[1] ? dVol : 0, 50)
+dnVolSum = math.sum(dClose < dClose[1] ? dVol : 0, 50)
+udRatio  = upVolSum / dnVolSum
+
+// RS Rating
+f_rs_rating() =>
+    n63 = bar_index < 63 ? bar_index : 63
+    n126 = bar_index < 126 ? bar_index : 126
+    n252 = bar_index < 252 ? bar_index : 252
+    
+    spx = request.security("SP:SPX", "D", close)
+    
+    // 1. Calculate weighted performance (Raw Score)
+    sP = (0.4*(dClose/dClose[n63])) + (0.2*(dClose/dClose[n126])) + (0.2*(dClose/dClose[189])) + (0.2*(dClose/dClose[n252]))
+    mP = (0.4*(spx/spx[n63])) + (0.2*(spx/spx[n126])) + (0.2*(spx/spx[189])) + (0.2*(spx/spx[n252]))
+    rawScore = (sP / mP) * 100
+    
+    // 2. Map Raw Score to 1-99 Scale (Normalization)
+    // Most leading stocks sit between 110 and 150 raw score. 
+    // We cap it so 150+ = 99 and 80- = 1.
+    float normalizedRS = math.min(99, math.max(1, (rawScore - 90) * 1.5)) 
+    normalizedRS
+
+rawRS = f_rs_rating()
+
+// ==========================================
+// --- Table Construction ---
+// ==========================================
+t_pos = posTable == 'Top Left' ? position.top_left : posTable == 'Top Right' ? position.top_right : posTable == 'Bottom Left' ? position.bottom_left : position.bottom_right
+t_size = tbl_size == 'Tiny' ? size.tiny : tbl_size == 'Small' ? size.small : tbl_size == 'Normal' ? size.normal : size.large
+
+var table t = table.new(t_pos, 2, 30, bgcolor=color.new(color.black, 20), border_width=2, border_color=bias_color)
+
+if barstate.islast
+    table.set_border_color(t, bias_color)
+    int r = 0
+    
+    if show_mktCap
+        table.cell(t, 0, r, "Market Cap", text_color=txt_col, text_size=t_size, text_halign=text.align_left)
+        table.cell(t, 1, r, formatNum(mktCap), text_color=txt_col, text_size=t_size, text_halign=text.align_right)
+        r += 1
+    
+    if show_float
+        table.cell(t, 0, r, "Shares Float", text_color=txt_col, text_size=t_size, text_halign=text.align_left)
+        table.cell(t, 1, r, formatNum(sharesFloat), text_color=txt_col, text_size=t_size, text_halign=text.align_right)
+        r += 1
+        table.cell(t, 0, r, "Float %", text_color=txt_col, text_size=t_size, text_halign=text.align_left)
+        table.cell(t, 1, r, str.tostring(floatPer, "0.0") + "%", text_color=txt_col, text_size=t_size, text_halign=text.align_right)
+        r += 1
+
+    if show_adrp
+        color aCol = adrPercent < 4 ? color.red : adrPercent > 15 ? color.green : txt_col
+        table.cell(t, 0, r, "ADR%", text_color=aCol, text_size=t_size, text_halign=text.align_left)
+        table.cell(t, 1, r, str.tostring(adrPercent, "0.00") + "%", text_color=aCol, text_size=t_size, text_halign=text.align_right)
+        r += 1
+
+    if show_lod
+        color lodCol = lod_dist > 50 ? color.green : lod_dist < 20 ? color.red : txt_col
+        table.cell(t, 0, r, "LoD dist.", text_color=lodCol, text_size=t_size, text_halign=text.align_left)
+        table.cell(t, 1, r, str.tostring(lod_dist, "0") + "%", text_color=lodCol, text_size=t_size, text_halign=text.align_right)
+        r += 1
+        table.cell(t, 0, r, "LoD Price", text_color=txt_col, text_size=t_size, text_halign=text.align_left)
+        table.cell(t, 1, r, str.tostring(dLow, "#.##"), text_color=txt_col, text_size=t_size, text_halign=text.align_right)
+        r += 1
+
+    if show_52w
+        color h52Col = distHigh > -10 ? color.green : distHigh < -25 ? color.red : txt_col
+        table.cell(t, 0, r, "Off 52W High", text_color=h52Col, text_size=t_size, text_halign=text.align_left)
+        table.cell(t, 1, r, str.tostring(distHigh, "0.0") + "%", text_color=h52Col, text_size=t_size, text_halign=text.align_right)
+        r += 1
+        table.cell(t, 0, r, "Above 52W Low", text_color=txt_col, text_size=t_size, text_halign=text.align_left)
+        table.cell(t, 1, r, "+" + str.tostring(distLow, "0.0") + "%", text_color=txt_col, text_size=t_size, text_halign=text.align_right)
+        r += 1
+
+    if show_advs
+        color vCol = avgDolVol >= 1e9 ? color.green : color.rgb(183, 82, 255)
+        table.cell(t, 0, r, "Avg $ Vol", text_color=vCol, text_size=t_size, text_halign=text.align_left)
+        table.cell(t, 1, r, "$" + formatNum(avgDolVol), text_color=vCol, text_size=t_size, text_halign=text.align_right)
+        r += 1
+        table.cell(t, 0, r, "Avg Vol", text_color=txt_col, text_size=t_size, text_halign=text.align_left)
+        table.cell(t, 1, r, formatNum(avgVol), text_color=txt_col, text_size=t_size, text_halign=text.align_right)
+        r += 1
+
+    if show_projVol
+        color pCol = projVol > avgVol ? color.green : txt_col
+        table.cell(t, 0, r, "Proj. Vol", text_color=pCol, text_size=t_size, text_halign=text.align_left)
+        table.cell(t, 1, r, formatNum(projVol), text_color=pCol, text_size=t_size, text_halign=text.align_right)
+        r += 1
+
+    if show_relVol
+        color rvCol = relVol > 100 ? color.green : relVol < 75 ? color.red : txt_col
+        table.cell(t, 0, r, "Rel. Vol", text_color=rvCol, text_size=t_size, text_halign=text.align_left)
+        table.cell(t, 1, r, str.tostring(relVol, "0") + "%", text_color=rvCol, text_size=t_size, text_halign=text.align_right)
+        r += 1
+        color bzCol = volBuzz > 0 ? color.green : color.red
+        table.cell(t, 0, r, "Vol. Buzz", text_color=bzCol, text_size=t_size, text_halign=text.align_left)
+        table.cell(t, 1, r, str.tostring(volBuzz, "0") + "%", text_color=bzCol, text_size=t_size, text_halign=text.align_right)
+        r += 1
+
+    if show_udRatio
+        color udCol = udRatio > 1.0 ? color.green : color.red
+        table.cell(t, 0, r, "U/D Ratio", text_color=udCol, text_size=t_size, text_halign=text.align_left)
+        table.cell(t, 1, r, str.tostring(udRatio, "0.00"), text_color=udCol, text_size=t_size, text_halign=text.align_right)
+        r += 1
+
+    if show_rs
+        color rsCol = rawRS > 80 ? color.green : rawRS < 60 ? color.red : txt_col
+        table.cell(t, 0, r, "RS Rating", text_color=rsCol, text_size=t_size, text_halign=text.align_left)
+        table.cell(t, 1, r, str.tostring(rawRS, "0.0"), text_color=rsCol, text_size=t_size, text_halign=text.align_right)
+        r += 1
+
+    if show_liqCap
+        table.cell(t, 0, r, "Liquidity Cap (Shares)", text_color=txt_col, text_size=t_size, text_halign=text.align_left)
+        table.cell(t, 1, r, str.tostring(liqCap, "0"), text_color=txt_col, text_size=t_size, text_halign=text.align_right)
+        r += 1
+
+    if show_sector
+        table.cell(t, 0, r, syminfo.sector, text_color=txt_col, text_size=t_size, text_halign=text.align_left)
+        table.merge_cells(t, 0, r, 1, r)
+        r += 1
+        table.cell(t, 0, r, syminfo.industry, text_color=txt_col, text_size=t_size, text_halign=text.align_left)
+        table.merge_cells(t, 0, r, 1, r)

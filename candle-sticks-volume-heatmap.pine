@@ -1,0 +1,20 @@
+
+//@version=6                                                                                                                                                       
+indicator("Volume Heatmap (Buy vs Sell)", overlay=true)                                                                                                            
+                                                                                                                                                                    
+volLength = input.int(50, "Volume Lookback Period", minval=10, maxval=200)                                                                                         
+useConfirmation = input.bool(false, "Require 2 Consecutive Bars")                                                                                                  
+                                                                                                                                                                    
+volAvg = ta.sma(volume, volLength)                                                                                                                                 
+highVol = volume > 2.0 * volAvg                                                                                                                                    
+lowVol = volume < 0.5 * volAvg                                                                                                                                     
+isBuy = close > open                                                                                                                                               
+                                                                                                                                                                    
+confirmed = highVol and highVol[1] and (isBuy == isBuy[1])                                                                                                         
+highVolSignal = useConfirmation ? confirmed : highVol                                                                                                              
+                                                                                                                                                                    
+barcolor(highVolSignal and isBuy ? #00FFFF : highVolSignal and not isBuy ? #FFFF00 : lowVol ? #808080 : na)                                                        
+                                                                                                                                                                    
+alertcondition(highVolSignal and isBuy, "High Vol Buy", "Bullish volume spike")                                                                                    
+alertcondition(highVolSignal and not isBuy, "High Vol Sell", "Bearish volume spike")                                                                               
+alertcondition(lowVol, "Low Volume", "Quiet/squeeze detected")
